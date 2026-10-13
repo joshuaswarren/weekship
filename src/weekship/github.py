@@ -172,7 +172,8 @@ class Client:
             items.append(Item(
                 kind="commit", repo=full, ref=c["sha"][:7], title=subject, url=c["html_url"],
                 author=user.get("login") or who.get("name", "unknown"),
-                author_type=user.get("type", "User"), at=parse_time(who.get("date") or c["commit"]["committer"]["date"]),
+                author_type=user.get("type", "User"),
+                at=parse_time((c["commit"].get("committer") or who).get("date") or who["date"]),
                 private=bool(repo.get("private")), body=message, trailers=tuple(_trailers(message)),
                 identities=(_identity(who),),
             ))

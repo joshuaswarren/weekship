@@ -70,7 +70,9 @@ def counts_line(stats: Stats) -> str:
 
 # ---- deterministic renderers ------------------------------------------------
 def notes_text(week: Week, stats: Stats, tz: tzinfo, summary: str | None, redact: bool) -> str:
-    lines = [f"# What shipped: {date_range(week, tz)}", "", summary or counts_line(stats), ""]
+    lines = [f"# What shipped: {date_range(week, tz)}", "", counts_line(stats), ""]
+    if summary:
+        lines += [summary, ""]
     releases = [i for i in week.items if i.kind == "release"]
     if releases:
         lines += ["## Releases", ""] + release_lines(releases, redact) + [""]
@@ -102,6 +104,9 @@ def brief_text(week: Week, stats: Stats, tz: tzinfo, summary: str | None, redact
     lines += ["## Who wrote it", "",
               f"- Agents: {o[AGENT]:,} changes, {lp[AGENT]:,} lines in PRs ({stats.agent_line_pct}% of PR lines)",
               f"- Humans (no agent marker): {o[HUMAN]:,} changes, {lp[HUMAN]:,} lines in PRs",
+              f"- Merged PRs: {stats.pr_by_origin[AGENT]:,} of {sum(stats.pr_by_origin.values()):,} agent-authored "
+              f"({stats.agent_pr_pct}%). Direct commits: {stats.commit_by_origin[AGENT]:,} of "
+              f"{sum(stats.commit_by_origin.values()):,}",
               f"- Bots: {o[BOT]:,} changes ({stats.automated_pct}% of all changes were agents or bots)", ""]
     top = [i for i in week.items if i.kind != "release"][:5]
     if top:
@@ -125,6 +130,8 @@ def brief_text(week: Week, stats: Stats, tz: tzinfo, summary: str | None, redact
                   f"{stats.agent_pct}% carry an agent marker. If agents commit under that account, the agent "
                   "count is a floor, not the real share. Have agents add a trailer so the next week counts "
                   "them: see docs/attribution.md.", ""]
+        if stats.commits >= 20 and not stats.commit_by_origin[AGENT]:
+            lines[-2] += f" None of the {stats.commits:,} direct commits carries a marker."
     signals = ", ".join(f"{name} x{n}" for name, n in stats.top_signals) or "none"
     lines += ["## How agent work was counted", "",
               f"Signals behind the agent count: {signals}. "
@@ -203,8 +210,8 @@ def degenerate(text: str) -> bool:
 
 
 def _ask(llm: LLM | None, user: str, facts: str, allowed: str, max_tokens: int,
-         must_contain: set[str] | None = None, max_chars: int = 900, attempts: int = 2) -> str | None:
-    """Ask the model; keep its text only if it adds no number we did not compute and states the real figure."""
+         max_chars: int = 900, attempts: int = 2) -> str | None:
+    """Ask the model; keep its text only if it is short, does not loop, and adds no number we did not compute."""
     if llm is None:
         return None
     for attempt in range(attempts):
@@ -219,8 +226,6 @@ def _ask(llm: LLM | None, user: str, facts: str, allowed: str, max_tokens: int,
             why = f"{len(text)} characters, limit {max_chars}" if len(text) > max_chars else "repeated lines"
         elif extra:
             why = f"unexpected numbers {sorted(extra)}"
-        elif must_contain and not numbers_in(text) & must_contain:
-            why = f"none of {sorted(must_contain)} present"
         else:
             return text
         print(f"weekship: model output rejected ({why}), attempt {attempt + 1} of {attempts}", file=sys.stderr)
@@ -250,16 +255,12 @@ def build_outputs(week: Week, stats: Stats, tz: tzinfo, *, llm: LLM | None = Non
                   redact: bool = False) -> dict[str, str]:
     facts = facts_text(week, stats, redact=True)
     allowed = allowed_numbers(stats)
-    real_figures = {str(stats.agent_pct), f"{stats.by_origin[AGENT]:,}"}
-    summary = _ask(llm, "Write 2 or 3 sentences telling an owner what shipped this week and how much of it "
-                        "agents wrote. Do not wrap lines.", facts, allowed, 300, must_contain=real_figures, max_chars=600)
-    post = _ask(llm, "Write two sentences, at most 400 characters, saying what kind of work shipped. Do not "
-                     "repeat the totals. Never name private repos.", facts, allowed, 200,
-                must_contain=None, max_chars=400)
+    body = _ask(llm, "Write two sentences, at most 400 characters, saying what kind of work shipped. Do not "
+                     "state totals or percentages. Never name private repos.", facts, allowed, 200, max_chars=400)
     data = export_json(week, stats, redact)
     return {
-        "notes.md": notes_text(week, stats, tz, summary, redact),
-        "brief.md": brief_text(week, stats, tz, summary, redact),
-        "post.md": post_text(week, stats, tz, post),
+        "notes.md": notes_text(week, stats, tz, body, redact),
+        "brief.md": brief_text(week, stats, tz, body, redact),
+        "post.md": post_text(week, stats, tz, body),
         "week.json": json.dumps(data, indent=2) + "\n",
     }

@@ -8,14 +8,23 @@ Write what shipped. weekship reads a week of merged pull requests, direct commit
 
 Your agents ship more than you know. weekship counts it.
 
-```
-$ weekship --owner acme --since 7d
-===== brief.md =====
-# Owner brief: acme, Oct 5 - Oct 12, 2026
+A real run, on the public repositories of the account that built this tool (seven days, 46 repos):
 
-**412 changes across 18 repos: 137 agent-authored (33%), 9 bot, 266 with no agent marker.**
-...
 ```
+$ weekship --owner joshuaswarren --public-only --since 7d
+**1,134 changes across 46 repos: 97 agent-authored (9%), 20 bot, 1,017 with no agent marker.**
+
+- Agents: 97 changes, 54,256 lines in PRs (35% of PR lines)
+- Humans (no agent marker): 1,017 changes, 102,638 lines in PRs
+- Merged PRs: 97 of 302 agent-authored (32%). Direct commits: 0 of 832
+- Bots: 20 changes (10% of all changes were agents or bots)
+...
+## Attribution gap
+One account (joshuaswarren) authored 97% of changes, but only 9% carry an agent marker. ...
+None of the 832 direct commits carries a marker.
+```
+
+The full notes, brief and post are in [docs/example](docs/example).
 
 It runs as a command line tool and as a GitHub Action. Python 3.11 or newer, standard library only.
 

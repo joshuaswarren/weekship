@@ -1,0 +1,100 @@
+name: weekship
+description: "Write what shipped: release notes, an owner brief and a shareable post, with a hard count of agent-authored vs human-authored work."
+author: Joshua Warren
+branding:
+  icon: package
+  color: blue
+inputs:
+  repo:
+    description: Repository to read (owner/name). Defaults to the current repository. Leave empty when you set owner.
+    default: ${{ github.repository }}
+  owner:
+    description: GitHub user or organization. Reads every repository it owns that had activity in the window.
+    default: ""
+  since:
+    description: Window start. 7d, 2w, 36h or an ISO date.
+    default: 7d
+  tz:
+    description: Time zone for dates in the output.
+    default: UTC
+  github-token:
+    description: Token with read access to the repositories. The default token reads only the current repository.
+    default: ${{ github.token }}
+  exclude:
+    description: Newline-separated owner/name globs to skip.
+    default: ""
+  config:
+    description: Path to a .weekship.toml in the workflow workspace.
+    default: ""
+  llm-base-url:
+    description: OpenAI-compatible base URL. Leave empty to write plain text without a language model.
+    default: ""
+  llm-api-key:
+    description: API key for the endpoint.
+    default: ""
+  llm-model:
+    description: Model name. Defaults to the first model the endpoint lists.
+    default: ""
+  out-dir:
+    description: Directory that receives notes.md, brief.md, post.md and week.json.
+    default: weekship-out
+outputs:
+  changes:
+    description: Merged PRs plus direct commits in the window.
+    value: ${{ steps.run.outputs.changes }}
+  agent-count:
+    description: Changes authored by AI agents.
+    value: ${{ steps.run.outputs.agent-count }}
+  agent-pct:
+    description: Agent-authored share of all changes, in whole percent.
+    value: ${{ steps.run.outputs.agent-pct }}
+  out-dir:
+    description: Directory holding the generated files.
+    value: ${{ inputs.out-dir }}
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+    - name: Install weekship
+      shell: bash
+      run: python -m pip install --quiet "$ACTION_PATH"
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+    - name: Run weekship
+      id: run
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        WEEKSHIP_LLM_API_KEY: ${{ inputs.llm-api-key }}
+        IN_REPO: ${{ inputs.repo }}
+        IN_OWNER: ${{ inputs.owner }}
+        IN_SINCE: ${{ inputs.since }}
+        IN_TZ: ${{ inputs.tz }}
+        IN_EXCLUDE: ${{ inputs.exclude }}
+        IN_CONFIG: ${{ inputs.config }}
+        IN_BASE_URL: ${{ inputs.llm-base-url }}
+        IN_MODEL: ${{ inputs.llm-model }}
+        IN_OUT: ${{ inputs.out-dir }}
+      run: |
+        set -euo pipefail
+        args=(--since "$IN_SINCE" --tz "$IN_TZ" --out "$IN_OUT" --format none --quiet)
+        if [ -n "$IN_OWNER" ]; then args+=(--owner "$IN_OWNER"); else args+=(--repo "$IN_REPO"); fi
+        [ -n "$IN_CONFIG" ] && args+=(--config "$IN_CONFIG")
+        while IFS= read -r glob; do [ -n "$glob" ] && args+=(--exclude "$glob"); done <<< "$IN_EXCLUDE"
+        if [ -n "$IN_BASE_URL" ]; then
+          args+=(--llm-base-url "$IN_BASE_URL")
+          [ -n "$IN_MODEL" ] && args+=(--llm-model "$IN_MODEL")
+        else
+          args+=(--no-llm)
+        fi
+        weekship "${args[@]}"
+        python - "$IN_OUT/week.json" >> "$GITHUB_OUTPUT" <<'PY'
+        import json, sys
+        s = json.load(open(sys.argv[1]))["stats"]
+        print(f"changes={s['changes']}")
+        print(f"agent-count={s['by_origin']['agent']}")
+        print(f"agent-pct={s['agent_pct']}")
+        PY
+        cat "$IN_OUT/brief.md" >> "$GITHUB_STEP_SUMMARY"

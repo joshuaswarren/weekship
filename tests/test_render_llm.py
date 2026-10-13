@@ -179,3 +179,42 @@ def test_human_named_like_an_agent_is_not_flagged_by_commit_identity():
     from weekship.classify import classify_origin
     for who in ("Devin Smith <devin@example.com>", "Gemini Cruz <gemini@example.org>", "Cursor Lee <c@example.net>"):
         assert classify_origin(make_item(identities=(who,)), Config()).origin == "human"
+
+
+def test_llm_settings_precedence_flag_env_file_default(monkeypatch):
+    for var in ("WEEKSHIP_LLM_BASE_URL", "OPENAI_BASE_URL", "WEEKSHIP_MODEL", "WEEKSHIP_LLM_API_KEY", "OPENAI_API_KEY"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("FLEET_KEY", "secret")
+    from weekship.llm import DEFAULT_BASE_URL
+    assert LLM.from_env().base_url == DEFAULT_BASE_URL
+    file_only = LLM.from_env(file_base_url="http://file/v1", file_model="m-file", key_env="FLEET_KEY")
+    assert (file_only.base_url, file_only.model, file_only.api_key) == ("http://file/v1", "m-file", "secret")
+    monkeypatch.setenv("WEEKSHIP_LLM_BASE_URL", "http://env/v1")
+    assert LLM.from_env(file_base_url="http://file/v1").base_url == "http://env/v1"
+    assert LLM.from_env("http://flag/v1", file_base_url="http://file/v1").base_url == "http://flag/v1"
+
+
+def test_titles_reach_the_model_with_digits_masked():
+    from weekship.render import facts_text
+    week = week_of(make_item(title="speed up decode from 34 to 51 tok/s", branch="claude/x"))
+    facts = facts_text(week, summarize(week), redact=True)
+    assert "from N to N tok/s" in facts and "34" not in facts and "51" not in facts
+
+
+def test_percent_spelled_out_counts_as_the_real_percentage():
+    week = sample()
+    out = build_outputs(week, summarize(week), timezone.utc, llm=Scripted("Agents wrote 50 percent of the 4 changes."))
+    assert "50% of the 4 changes" in out["brief.md"]
+
+
+def test_a_rejected_model_answer_is_retried_once_then_accepted():
+    import itertools
+    replies = itertools.chain(["Agents wrote 9000 things."], itertools.repeat("Agents wrote 50% of the 4 changes."))
+
+    class Flaky(LLM):
+        def complete(self, system, user, max_tokens=700):
+            return next(replies)
+
+    week = sample()
+    out = build_outputs(week, summarize(week), timezone.utc, llm=Flaky("http://x/v1", "k", "m"))
+    assert "Agents wrote 50% of the 4 changes." in out["brief.md"]

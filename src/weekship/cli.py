@@ -70,7 +70,9 @@ def main(argv: list[str] | None = None) -> int:
     stats = summarize(week)
     tz = ZoneInfo(args.tz)
 
-    llm = None if args.no_llm else LLM.from_env(args.llm_base_url, args.llm_model)
+    llm = None if args.no_llm else LLM.from_env(
+        args.llm_base_url, args.llm_model, file_base_url=cfg.llm_base_url, file_model=cfg.llm_model,
+        key_env=cfg.llm_api_key_env)
     outputs = build_outputs(week, stats, tz, llm=llm, redact=args.redact_private)
     if args.format == "none":
         pass

@@ -1,6 +1,7 @@
 """Detection rules. Defaults cover the common coding agents; a `.weekship.toml` extends them."""
 from __future__ import annotations
 
+import os
 import re
 import tomllib
 from dataclasses import dataclass, field
@@ -46,6 +47,9 @@ class Config:
     agent_body_patterns: list[str] = field(default_factory=lambda: list(AGENT_BODY_PATTERNS))
     agent_identity_patterns: list[str] = field(default_factory=lambda: list(AGENT_IDENTITY_PATTERNS))
     exclude_repos: list[str] = field(default_factory=list)  # fnmatch against owner/name
+    llm_base_url: str | None = None
+    llm_model: str | None = None
+    llm_api_key_env: str | None = None  # name of the environment variable holding the key; never the key
 
     def trailer_res(self) -> list[re.Pattern]:
         return [re.compile(p, re.I) for p in self.agent_trailer_patterns]
@@ -60,12 +64,18 @@ class Config:
 def load_config(path: str | Path | None = None) -> Config:
     """Read `.weekship.toml`; every list in it is added to the defaults."""
     cfg = Config()
-    file = Path(path) if path else Path(".weekship.toml")
-    if not file.is_file():
-        if path:
+    if path:
+        file = Path(path)
+        if not file.is_file():
             raise FileNotFoundError(path)
-        return cfg
+    else:
+        user = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "weekship" / "config.toml"
+        file = next((f for f in (Path(".weekship.toml"), user) if f.is_file()), None)
+        if file is None:
+            return cfg
     data = tomllib.loads(file.read_text())
+    llm = data.get("llm", {})
+    cfg.llm_base_url, cfg.llm_model, cfg.llm_api_key_env = llm.get("base_url"), llm.get("model"), llm.get("api_key_env")
     detect = data.get("detect", {})
     for key in ("agent_logins", "bot_logins", "agent_branch_prefixes", "bot_branch_prefixes",
                 "agent_trailer_patterns", "agent_body_patterns", "agent_identity_patterns"):

@@ -58,6 +58,9 @@ class Stats:
     agent_pct: int
     automated_pct: int
     agent_line_pct: int
+    pr_by_origin: dict[str, int]
+    commit_by_origin: dict[str, int]
+    agent_pr_pct: int
     repos_active: int
     top_repos: list[tuple[str, int]]
     top_signals: list[tuple[str, int]]
@@ -78,6 +81,8 @@ def summarize(week: Week) -> Stats:
     repo_counts = Counter(i.repo for i in work)
     authors = Counter(i.author for i in work).most_common(1)
     top_author, top_count = authors[0] if authors else ("", 0)
+    pr_by_origin = {o: sum(1 for i in work if i.kind == "pr" and i.origin == o) for o in (HUMAN, AGENT, BOT)}
+    commit_by_origin = {o: sum(1 for i in work if i.kind == "commit" and i.origin == o) for o in (HUMAN, AGENT, BOT)}
     return Stats(
         changes=len(work),
         prs=sum(1 for i in work if i.kind == "pr"),
@@ -88,6 +93,9 @@ def summarize(week: Week) -> Stats:
         agent_pct=_pct(by_origin[AGENT], len(work)),
         automated_pct=_pct(by_origin[AGENT] + by_origin[BOT], len(work)),
         agent_line_pct=_pct(lines[AGENT], pr_lines),
+        pr_by_origin=pr_by_origin,
+        commit_by_origin=commit_by_origin,
+        agent_pr_pct=_pct(pr_by_origin[AGENT], sum(pr_by_origin.values())),
         repos_active=len({i.repo for i in week.items}),
         top_repos=repo_counts.most_common(5),
         top_signals=signals.most_common(),

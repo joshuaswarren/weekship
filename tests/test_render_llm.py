@@ -251,3 +251,18 @@ def test_post_is_lead_then_model_paragraph_then_public_bullets():
     lead, body, bullets = out.strip().split("\n\n")
     assert lead.startswith("We shipped 4 changes across 2 repos") and "authored 2 of them (50%)" in lead
     assert body == "Mostly kernel and cache work." and bullets.startswith("- ")
+
+
+def test_pr_and_commit_shares_are_reported_separately():
+    week = week_of(make_item(ref="#1", branch="claude/x"), make_item(ref="#2"),
+                   make_item(kind="commit", ref="abc1234"), make_item(kind="commit", ref="def5678"))
+    stats = summarize(week)
+    assert stats.agent_pr_pct == 50 and stats.pr_by_origin["agent"] == 1 and stats.commit_by_origin["agent"] == 0
+    assert "Merged PRs: 1 of 2 agent-authored (50%). Direct commits: 0 of 2" in build_outputs(week, stats, timezone.utc)["brief.md"]
+
+
+def test_gap_notes_when_no_direct_commit_has_a_marker():
+    items = [make_item(kind="commit", ref=f"c{n:06d}", author="owner") for n in range(30)]
+    items.append(make_item(ref="#1", author="owner", branch="claude/x"))
+    week = week_of(*items)
+    assert "None of the 30 direct commits carries a marker." in build_outputs(week, summarize(week), timezone.utc)["brief.md"]

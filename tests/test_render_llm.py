@@ -44,7 +44,7 @@ def test_outputs_without_llm_state_the_hard_number(tmp_path):
     week = sample()
     out = build_outputs(week, summarize(week), timezone.utc, llm=None)
     assert "2 agent-authored (50%)" in out["brief.md"]
-    assert "2 of them (50%)" in out["post.md"]
+    assert "AI agents authored 2 of them (50%)" in out["post.md"]
     assert "## Releases" in out["notes.md"] and "## Highlights" in out["notes.md"]
     assert "(agent)" in out["notes.md"]
 
@@ -84,7 +84,7 @@ def test_unreachable_llm_falls_back_to_plain_text():
             raise LLMError("connection refused")
     week = sample()
     out = build_outputs(week, summarize(week), timezone.utc, llm=Down("http://x/v1", "k", "m"))
-    assert "2 of them (50%)" in out["post.md"]
+    assert "AI agents authored 2 of them (50%)" in out["post.md"]
 
 
 def test_numbers_ok():
@@ -153,7 +153,7 @@ def test_model_cannot_reuse_digits_from_dates_or_titles():
     out = build_outputs(week, summarize(week), timezone.utc,
                         llm=Scripted("Agents wrote 100% of the 12 changes in 2026."))
     assert "12 changes in 2026" not in out["post.md"]
-    assert "1 of them (100%)" in out["post.md"]
+    assert "agents authored 1 of them (100%)" in out["post.md"]
 
 
 def test_private_titles_stay_out_of_the_post_the_llm_facts_and_redacted_outputs():
@@ -218,3 +218,36 @@ def test_a_rejected_model_answer_is_retried_once_then_accepted():
     week = sample()
     out = build_outputs(week, summarize(week), timezone.utc, llm=Flaky("http://x/v1", "k", "m"))
     assert "Agents wrote 50% of the 4 changes." in out["brief.md"]
+
+
+def test_looping_or_overlong_model_text_is_rejected():
+    from weekship.render import degenerate
+    assert degenerate("- a\n- b\n- a\n- c\n")
+    assert not degenerate("- a\n- b\n- c\n- d\n")
+    week = sample()
+    loop = "50% of 4 changes.\n" + "- The total number of changes was 4.\n" * 6
+    out = build_outputs(week, summarize(week), timezone.utc, llm=Scripted(loop))
+    assert "The total number of changes was 4." not in out["post.md"] + out["brief.md"]
+    long = "50% of 4 changes. " + "Words. " * 200
+    assert "Words." not in build_outputs(week, summarize(week), timezone.utc, llm=Scripted(long))["post.md"]
+
+
+def test_digits_inside_names_are_not_figures_and_survive_masking():
+    from weekship.llm import numbers_in
+    from weekship.render import mask_numbers
+    assert numbers_in("M2 Max fp16 v0.7.32 gave 34 to 51 tok/s, 3%") == {"34", "51", "3"}
+    assert mask_numbers("M2 Max fp16 route: 34 to 51 tok/s") == "M2 Max fp16 route: N to N tok/s"
+
+
+def test_hard_wrapped_model_lines_are_joined_but_bullets_stay_separate():
+    from weekship.render import unwrap
+    wrapped = "50% of 4 changes were\nauthored by agents.\n\n- first bullet that\nwraps here\n- second bullet\n"
+    assert unwrap(wrapped) == "50% of 4 changes were authored by agents.\n\n- first bullet that wraps here\n- second bullet"
+
+
+def test_post_is_lead_then_model_paragraph_then_public_bullets():
+    week = sample()
+    out = build_outputs(week, summarize(week), timezone.utc, llm=Scripted("Mostly kernel and cache work."))["post.md"]
+    lead, body, bullets = out.strip().split("\n\n")
+    assert lead.startswith("We shipped 4 changes across 2 repos") and "authored 2 of them (50%)" in lead
+    assert body == "Mostly kernel and cache work." and bullets.startswith("- ")

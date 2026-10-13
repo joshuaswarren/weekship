@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import sys
 from datetime import datetime, timedelta, timezone
@@ -12,7 +13,7 @@ from .config import load_config
 from .github import Client, GitHubError, find_token
 from .llm import LLM
 from .model import Window
-from .pipeline import collect_week, summarize
+from .pipeline import collect_week, summarize, week_from_json
 from .render import build_outputs
 
 _DURATION = re.compile(r"^(\d+)([dwh])$")
@@ -32,6 +33,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="weekship", description="Write what shipped: release notes, an owner brief and a post.")
     p.add_argument("--repo", action="append", default=[], metavar="OWNER/NAME", help="repository to read (repeatable)")
     p.add_argument("--owner", help="GitHub user or organization: read every repository it owns")
+    p.add_argument("--from-json", metavar="WEEK_JSON", help="re-render a saved week.json instead of reading GitHub")
     p.add_argument("--since", default="7d", help="window start: 7d, 2w, 36h or an ISO date (default 7d)")
     p.add_argument("--until", help="window end, ISO date/time (default now)")
     p.add_argument("--tz", default="UTC", help="time zone for dates in the output, e.g. America/Chicago")
@@ -51,22 +53,24 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    if not args.repo and not args.owner:
-        print("weekship: give --repo OWNER/NAME or --owner USER_OR_ORG", file=sys.stderr)
+    if not args.repo and not args.owner and not args.from_json:
+        print("weekship: give --repo OWNER/NAME, --owner USER_OR_ORG or --from-json WEEK_JSON", file=sys.stderr)
         return 2
     now = datetime.now(timezone.utc)
     until = parse_since(args.until, now) if args.until else now
     window = Window(since=parse_since(args.since, now), until=until)
     cfg = load_config(args.config)
     cfg.exclude_repos.extend(args.exclude)
-    client = Client(token=find_token())
     log = (lambda msg: None) if args.quiet else (lambda msg: print(msg, file=sys.stderr))
-    try:
-        week = collect_week(client, window, cfg, owner=args.owner, repos=args.repo,
-                            public_only=args.public_only, include_forks=args.include_forks, progress=log)
-    except GitHubError as err:
-        print(f"weekship: {err}", file=sys.stderr)
-        return 1
+    if args.from_json:
+        week = week_from_json(json.loads(Path(args.from_json).read_text()))
+    else:
+        try:
+            week = collect_week(Client(token=find_token()), window, cfg, owner=args.owner, repos=args.repo,
+                                public_only=args.public_only, include_forks=args.include_forks, progress=log)
+        except GitHubError as err:
+            print(f"weekship: {err}", file=sys.stderr)
+            return 1
     stats = summarize(week)
     tz = ZoneInfo(args.tz)
 

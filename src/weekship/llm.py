@@ -75,8 +75,12 @@ class LLM:
         return text
 
 
+# A figure is digits standing alone. Digits inside a name (M2, fp16, v0.7.32) are not figures.
+FIGURE = r"(?<![A-Za-z0-9.])\d+(?:,\d{3})*(?:\.\d+)?(?![A-Za-z0-9])"
+
+
 def numbers_in(text: str) -> set[str]:
-    return set(re.findall(r"\d+(?:,\d{3})*(?:\.\d+)?", text))
+    return set(re.findall(FIGURE, text))
 
 
 def numbers_ok(output: str, facts: str) -> bool:

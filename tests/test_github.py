@@ -110,3 +110,36 @@ def test_list_repos_skips_forks_archived_and_idle(client_for):
 
 def test_parse_time_is_utc():
     assert parse_time("2026-10-12T07:00:00-05:00") == NOW
+
+
+def test_squash_merge_with_a_title_only_subject_is_not_counted_twice(client_for):
+    prs = [pr(1, "2026-10-10T00:00:00Z")]
+    cs = routes(prs, [commit("squash1", "Add feature X")], {1: [commit("w1", "wip")]})
+    cs["/repos/o/r/pulls/1"] = {"additions": 3, "deletions": 1, "changed_files": 1, "merge_commit_sha": "squash1"}
+    client, _ = client_for(cs)
+    assert [i.ref for i in client.collect(REPO, WINDOW.since, WINDOW.until)] == ["#1"]
+
+
+def test_commit_with_a_null_author_does_not_crash(client_for):
+    prs = [pr(1, "2026-10-10T00:00:00Z")]
+    bare = {"sha": "n1", "html_url": "u", "parents": [{}], "author": None,
+            "commit": {"message": "ghost work", "author": None, "committer": {"date": "2026-10-10T00:00:00Z"}}}
+    in_pr = {**bare, "sha": "p1", "commit": {**bare["commit"], "message": "pr work"}}
+    client, _ = client_for(routes(prs, [bare], {1: [in_pr]}))
+    items = client.collect(REPO, WINDOW.since, WINDOW.until)
+    assert sorted(i.ref for i in items) == ["#1", "n1"] and items[1].author == "unknown"
+
+
+def test_release_scan_stops_at_the_first_release_older_than_the_window(client_for):
+    old = {"tag_name": "v0", "published_at": "2026-01-01T00:00:00Z", "created_at": "2026-01-01T00:00:00Z", "html_url": "u"}
+    calls = []
+
+    def releases(url):
+        calls.append(url)
+        return 200, {"link": '<https://api.github.com/repos/o/r/releases?page=2>; rel="next"'}, json.dumps([old]).encode()
+
+    cs = routes([], [])
+    cs["/repos/o/r/releases"] = releases
+    client, _ = client_for(cs)
+    assert client.collect(REPO, WINDOW.since, WINDOW.until) == []
+    assert len(calls) == 1

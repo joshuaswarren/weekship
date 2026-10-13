@@ -133,3 +133,49 @@ def test_commit_identity_marks_agent_work():
     from weekship.classify import classify_origin
     item = classify_origin(make_item(identities=("Ops Agent <agents@example.com>",)), Config())
     assert item.origin == "agent" and item.signals[0].startswith("identity:")
+
+
+def test_many_releases_in_one_repo_collapse_to_a_range():
+    rels = [make_item(kind="release", ref=f"v1.0.{n}", title=f"v1.0.{n}", at=WINDOW.since.replace(day=6 + n)) for n in range(5)]
+    notes = build_outputs(week_of(*rels), summarize(week_of(*rels)), timezone.utc)["notes.md"]
+    assert "o/r: 5 releases, v1.0.0 to v1.0.4" in notes
+
+
+def test_the_word_security_alone_does_not_make_a_change_a_security_fix():
+    from weekship.impact import categorize
+    assert categorize(make_item(title="outline: security move to One")) != "security"
+    assert categorize(make_item(title="Fix XSS in comment form")) == "security"
+    assert categorize(make_item(title="security: rotate session keys")) == "security"
+
+
+def test_model_cannot_reuse_digits_from_dates_or_titles():
+    week = week_of(make_item(ref="#1", title="Bump to 4.17.21", branch="claude/x"))
+    out = build_outputs(week, summarize(week), timezone.utc,
+                        llm=Scripted("Agents wrote 100% of the 12 changes in 2026."))
+    assert "12 changes in 2026" not in out["post.md"]
+    assert "1 of them (100%)" in out["post.md"]
+
+
+def test_private_titles_stay_out_of_the_post_the_llm_facts_and_redacted_outputs():
+    week = week_of(make_item(ref="#1", title="Rotate production vault keys", repo="o/secret", private=True),
+                   make_item(ref="#2", title="Add public export", repo="o/open", branch="claude/x"))
+    stats = summarize(week)
+    seen = []
+
+    class Spy(Scripted):
+        def complete(self, system, user, max_tokens=700):
+            seen.append(user)
+            return super().complete(system, user, max_tokens)
+
+    out = build_outputs(week, stats, timezone.utc, llm=Spy("Agents wrote 50% of 2 changes."), redact=True)
+    assert "vault keys" not in "".join(seen) + out["post.md"] + out["notes.md"] + out["brief.md"] + out["week.json"]
+    assert "o/secret" not in out["week.json"] + out["notes.md"] + out["brief.md"]
+    assert "Add public export" in build_outputs(week, stats, timezone.utc, redact=True)["post.md"]
+    unredacted = build_outputs(week, stats, timezone.utc)
+    assert "vault keys" in unredacted["notes.md"] and "vault keys" not in unredacted["post.md"]
+
+
+def test_human_named_like_an_agent_is_not_flagged_by_commit_identity():
+    from weekship.classify import classify_origin
+    for who in ("Devin Smith <devin@example.com>", "Gemini Cruz <gemini@example.org>", "Cursor Lee <c@example.net>"):
+        assert classify_origin(make_item(identities=(who,)), Config()).origin == "human"

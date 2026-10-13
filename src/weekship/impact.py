@@ -8,8 +8,10 @@ from .model import Item
 
 # (category, pattern over "labels + title"); the first match wins, so order is priority.
 _RULES: list[tuple[str, re.Pattern]] = [
-    ("security", re.compile(r"\b(security|cve-\d|vulnerab|xss|csrf|sqli|exploit)\b", re.I)),
-    ("deps", re.compile(r"\b(bump|dependenc|dependabot|renovate|lockfile|upgrade .* to \d)", re.I)),
+    ("security", re.compile(
+        r"^security\b|\bsecurity (fix|patch|hardening|advisory|vulnerab)|\bcve-\d|\bvulnerab|\bxss\b|\bcsrf\b"
+        r"|\bsql injection\b|\bexploit", re.I)),
+    ("deps", re.compile(r"\b(bump|dependabot|renovate|lockfile|dependenc(y|ies) (update|upgrade|bump)|upgrade .* to \d)", re.I)),
     ("feature", re.compile(r"^(feat|feature|add|introduce|support|implement|new)\b|\benhancement\b", re.I)),
     ("fix", re.compile(r"^(fix|bugfix|hotfix|patch|resolve|correct)\b|\bbug\b|\bregression\b", re.I)),
     ("perf", re.compile(r"^perf\b|\b(performance|faster|speed ?up|latency|throughput)\b", re.I)),

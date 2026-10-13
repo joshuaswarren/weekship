@@ -26,7 +26,8 @@ AGENT_TRAILER_PATTERNS = [
 ]
 # Regexes matched against each commit author identity, "Name <email>".
 AGENT_IDENTITY_PATTERNS = [
-    r"\b(claude|codex|copilot|cursor|devin|gemini|aider|openhands)\b", r"\bagents?@", r"@anthropic\.com",
+    r"\bagents?@", r"@anthropic\.com", r"@openai\.com", r"\bclaude\b", r"\bcodex\b", r"copilot", r"cursoragent",
+    r"devin-ai|devin\.ai", r"openhands", r"google-labs-jules|jules\[bot\]", r"gemini-code-assist",
 ]
 # Regexes matched against the PR or commit body.
 AGENT_BODY_PATTERNS = [

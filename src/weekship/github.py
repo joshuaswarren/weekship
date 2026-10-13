@@ -118,13 +118,14 @@ class Client:
     # ---- collectors -------------------------------------------------------
     def collect(self, repo: dict, since: datetime, until: datetime) -> list[Item]:
         """Everything that shipped in one repo: merged PRs, direct commits, releases."""
-        prs, subjects = self._merged_prs(repo, since, until)
-        return prs + self._direct_commits(repo, since, until, prs, subjects) + self._releases(repo, since, until)
+        prs, covered = self._merged_prs(repo, since, until)
+        return prs + self._direct_commits(repo, since, until, prs, covered) + self._releases(repo, since, until)
 
     def _merged_prs(self, repo: dict, since: datetime, until: datetime) -> tuple[list[Item], set[str]]:
+        """Merged PRs, plus the shas and subjects that identify their commits on the default branch."""
         full = repo["full_name"]
         items: list[Item] = []
-        subjects: set[str] = set()
+        covered: set[str] = set()
         for pr in self.pages(f"/repos/{full}/pulls", state="closed", sort="updated", direction="desc"):
             if parse_time(pr["updated_at"]) < since:
                 break
@@ -134,12 +135,14 @@ class Client:
             if not since <= merged < until:
                 continue
             detail = self.get(f"/repos/{full}/pulls/{pr['number']}")
+            if detail.get("merge_commit_sha"):
+                covered.add(detail["merge_commit_sha"])
             trailers: list[str] = []
             identities: list[str] = []
             for commit in self.pages(f"/repos/{full}/pulls/{pr['number']}/commits"):
                 message = commit["commit"]["message"]
-                identities.append(_identity(commit["commit"]["author"]))
-                subjects.add(message.splitlines()[0] if message else "")
+                identities.append(_identity(commit["commit"].get("author")))
+                covered.update((commit["sha"], message.splitlines()[0] if message else ""))
                 trailers.extend(_trailers(message))
             items.append(Item(
                 kind="pr", repo=full, ref=f"#{pr['number']}", title=pr["title"], url=pr["html_url"],
@@ -150,10 +153,10 @@ class Client:
                 branch=pr["head"]["ref"], body=pr.get("body") or "",
                 trailers=tuple(dict.fromkeys(trailers)), identities=tuple(dict.fromkeys(identities)),
             ))
-        return items, subjects
+        return items, covered
 
     def _direct_commits(self, repo: dict, since: datetime, until: datetime,
-                        prs: list[Item], subjects: set[str]) -> list[Item]:
+                        prs: list[Item], covered: set[str]) -> list[Item]:
         """Default-branch commits that did not arrive through a merged PR."""
         full = repo["full_name"]
         numbers = {pr.ref[1:] for pr in prs}
@@ -161,15 +164,17 @@ class Client:
         for c in self.pages(f"/repos/{full}/commits", since=since.isoformat(), until=until.isoformat()):
             message = c["commit"]["message"]
             subject = message.splitlines()[0] if message else ""
-            if len(c.get("parents", [])) > 1 or subject in subjects or _mentions_pr(subject, numbers):
+            if (len(c.get("parents", [])) > 1 or c["sha"] in covered or subject in covered
+                    or _mentions_pr(subject, numbers)):
                 continue
             user = c.get("author") or {}
+            who = c["commit"].get("author") or {}
             items.append(Item(
                 kind="commit", repo=full, ref=c["sha"][:7], title=subject, url=c["html_url"],
-                author=user.get("login") or c["commit"]["author"]["name"],
-                author_type=user.get("type", "User"), at=parse_time(c["commit"]["author"]["date"]),
+                author=user.get("login") or who.get("name", "unknown"),
+                author_type=user.get("type", "User"), at=parse_time(who.get("date") or c["commit"]["committer"]["date"]),
                 private=bool(repo.get("private")), body=message, trailers=tuple(_trailers(message)),
-                identities=(_identity(c["commit"]["author"]),),
+                identities=(_identity(who),),
             ))
         return items
 
@@ -179,7 +184,10 @@ class Client:
         for rel in self.pages(f"/repos/{full}/releases"):
             if rel.get("draft") or not rel.get("published_at"):
                 continue
+            rel.setdefault("created_at", rel["published_at"])
             at = parse_time(rel["published_at"])
+            if at < since and parse_time(rel["created_at"]) < since:
+                break  # newest first: nothing later in the list can fall in the window
             if not since <= at < until:
                 continue
             items.append(Item(
@@ -198,7 +206,8 @@ def _trailers(message: str) -> list[str]:
     return [m.group(0).strip() for m in _TRAILER.finditer(message or "")]
 
 
-def _identity(author: dict) -> str:
+def _identity(author: dict | None) -> str:
+    author = author or {}
     return f"{author.get('name', '')} <{author.get('email', '')}>"
 
 

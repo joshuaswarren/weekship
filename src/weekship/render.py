@@ -13,6 +13,8 @@ from .pipeline import Stats
 
 TAG = {AGENT: " (agent)", BOT: " (bot)", HUMAN: ""}
 MAX_PER_AREA = 12
+PRIVATE_TITLE = "a change in a private repo"
+PRIVATE_REPO = "a private repo"
 
 
 def date_range(week: Week, tz: tzinfo) -> str:
@@ -21,7 +23,11 @@ def date_range(week: Week, tz: tzinfo) -> str:
 
 
 def repo_label(repo: str, private: bool, redact: bool) -> str:
-    return "a private repo" if redact and private else repo
+    return PRIVATE_REPO if redact and private else repo
+
+
+def item_title(item: Item, redact: bool) -> str:
+    return PRIVATE_TITLE if redact and item.private else item.title
 
 
 def item_line(item: Item, redact: bool) -> str:
@@ -32,13 +38,28 @@ def item_line(item: Item, redact: bool) -> str:
     else:
         ref = f"{where}{item.ref}" if item.kind == "pr" else f"{where} {item.ref}"
     link = ref if hidden else f"[{ref}]({item.url})"
-    return f"- {item.title} ({link}){TAG[item.origin]}"
+    return f"- {item_title(item, redact)} ({link}){TAG[item.origin]}"
+
+
+def release_lines(releases: list[Item], redact: bool) -> list[str]:
+    """One line per release; a repo with several releases collapses to its first and last tag."""
+    by_repo: dict[str, list[Item]] = {}
+    for rel in sorted(releases, key=lambda r: r.at):
+        by_repo.setdefault(rel.repo, []).append(rel)
+    lines = []
+    for repo, rels in by_repo.items():
+        if len(rels) <= 3:
+            lines += [item_line(r, redact) for r in rels]
+        else:
+            where = repo_label(repo, rels[0].private, redact)
+            lines.append(f"- {where}: {len(rels)} releases, {rels[0].ref} to {rels[-1].ref}")
+    return lines
 
 
 def counts_line(stats: Stats) -> str:
     o = stats.by_origin
-    return (f"{stats.changes} changes across {stats.repos_active} repos: {o[AGENT]} agent-authored "
-            f"({stats.agent_pct}%), {o[BOT]} bot, {o[HUMAN]} human.")
+    return (f"{stats.changes:,} changes across {stats.repos_active:,} repos: {o[AGENT]:,} agent-authored "
+            f"({stats.agent_pct}%), {o[BOT]:,} bot, {o[HUMAN]:,} with no agent marker.")
 
 
 # ---- deterministic renderers ------------------------------------------------
@@ -46,7 +67,7 @@ def notes_text(week: Week, stats: Stats, tz: tzinfo, summary: str | None, redact
     lines = [f"# What shipped: {date_range(week, tz)}", "", summary or counts_line(stats), ""]
     releases = [i for i in week.items if i.kind == "release"]
     if releases:
-        lines += ["## Releases", ""] + [item_line(r, redact) for r in releases] + [""]
+        lines += ["## Releases", ""] + release_lines(releases, redact) + [""]
     work = [i for i in week.items if i.kind != "release"]
     highlights = [i for i in work if i.tier == "high"][:MAX_PER_AREA]
     if highlights:
@@ -73,9 +94,9 @@ def brief_text(week: Week, stats: Stats, tz: tzinfo, summary: str | None, redact
     if summary:
         lines += [summary, ""]
     lines += ["## Who wrote it", "",
-              f"- Agents: {o[AGENT]} changes, {lp[AGENT]:,} lines in PRs ({stats.agent_line_pct}% of PR lines)",
-              f"- Humans (no agent marker): {o[HUMAN]} changes, {lp[HUMAN]:,} lines in PRs",
-              f"- Bots: {o[BOT]} changes ({stats.automated_pct}% of all changes were agents or bots)", ""]
+              f"- Agents: {o[AGENT]:,} changes, {lp[AGENT]:,} lines in PRs ({stats.agent_line_pct}% of PR lines)",
+              f"- Humans (no agent marker): {o[HUMAN]:,} changes, {lp[HUMAN]:,} lines in PRs",
+              f"- Bots: {o[BOT]:,} changes ({stats.automated_pct}% of all changes were agents or bots)", ""]
     top = [i for i in week.items if i.kind != "release"][:5]
     if top:
         lines += ["## What moved the most", ""] + [item_line(i, redact) for i in top] + [""]
@@ -83,7 +104,8 @@ def brief_text(week: Week, stats: Stats, tz: tzinfo, summary: str | None, redact
         lines += ["## Where the work happened", ""]
         lines += [f"- {repo_label(r, any(i.private for i in week.items if i.repo == r), redact)}: {n} changes"
                   for r, n in stats.top_repos] + [""]
-    attention = [i for i in week.items if i.kind == "pr" and (i.lines >= 1000 or i.category == "security")][:5]
+    attention = sorted((i for i in week.items if i.kind == "pr" and (i.lines >= 1000 or i.category == "security")),
+                       key=lambda i: -i.lines)[:5]
     if attention:
         lines += ["## Worth a look", ""] + [f"{item_line(i, redact)}: {i.lines:,} lines" for i in attention] + [""]
     agent_only = sorted({i.repo for i in week.items if i.kind != "release"} -
@@ -102,7 +124,8 @@ def brief_text(week: Week, stats: Stats, tz: tzinfo, summary: str | None, redact
               f"Signals behind the agent count: {signals}. "
               "An item is agent-authored when its author account, branch name, commit trailer or body marks an AI coding agent.", ""]
     if week.skipped:
-        lines += ["## Not read", ""] + [f"- {s}" for s in week.skipped] + [""]
+        unread = [f"{len(week.skipped)} repos could not be read"] if redact else week.skipped
+        lines += ["## Not read", ""] + [f"- {s}" for s in unread] + [""]
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -110,9 +133,10 @@ def post_text(week: Week, stats: Stats, tz: tzinfo, text: str | None) -> str:
     if text:
         return text.strip() + "\n"
     work = [i for i in week.items if i.kind != "release"]
-    top = [i for i in work if i.tier != "low"][:3] or work[:3]
-    lines = [f"We shipped {stats.changes} changes across {stats.repos_active} repos this week. "
-             f"{stats.by_origin[AGENT]} of them ({stats.agent_pct}%) were written by AI agents.", ""]
+    public = [i for i in work if not i.private]
+    top = [i for i in public if i.tier != "low"][:3] or public[:3]
+    lines = [f"We shipped {stats.changes:,} changes across {stats.repos_active:,} repos this week. "
+             f"{stats.by_origin[AGENT]:,} of them ({stats.agent_pct}%) are marked as written by AI agents.", ""]
     lines += [f"- {i.title}" for i in top]
     return "\n".join(lines).rstrip() + "\n"
 
@@ -125,14 +149,19 @@ _SYSTEM = ("You write plain, factual engineering updates in American English. Te
 
 def facts_text(week: Week, stats: Stats, tz: tzinfo, redact: bool) -> str:
     top = [i for i in week.items if i.kind != "release"][:8]
-    rows = [f"- {i.title} [{repo_label(i.repo, i.private, redact)}, {i.origin}, {i.category}]" for i in top]
+    rows = [f"- {item_title(i, redact)} [{repo_label(i.repo, i.private, redact)}, {i.origin}, {i.category}]" for i in top]
     return "\n".join([
         f"Period: {date_range(week, tz)}", counts_line(stats),
         f"Agent share of PR lines: {stats.agent_line_pct}%", f"Releases: {stats.releases}",
         "Biggest changes:", *rows])
 
 
-def _ask(llm: LLM | None, user: str, facts: str, max_tokens: int, must_contain: str = "") -> str | None:
+def allowed_numbers(stats: Stats) -> str:
+    """The only numbers model prose may contain: counts the tool computed, not digits from titles or dates."""
+    return " ".join([counts_line(stats), f"{stats.agent_line_pct}% {stats.releases} {stats.automated_pct}%"])
+
+
+def _ask(llm: LLM | None, user: str, facts: str, allowed: str, max_tokens: int, must_contain: str = "") -> str | None:
     if llm is None:
         return None
     try:
@@ -140,23 +169,38 @@ def _ask(llm: LLM | None, user: str, facts: str, max_tokens: int, must_contain: 
     except LLMError as err:
         print(f"weekship: language model unavailable, writing plain text ({err})", file=sys.stderr)
         return None
-    if not numbers_ok(text, facts) or must_contain not in text:
+    if not numbers_ok(text, allowed) or must_contain not in text:
         print("weekship: model output failed the number check, writing plain text", file=sys.stderr)
         return None
     return text
 
 
+def export_json(week: Week, stats: Stats, redact: bool) -> dict:
+    private = {i.repo for i in week.items if i.private}
+    hide = (lambda repo: PRIVATE_REPO if redact and repo in private else repo)
+    items = []
+    for i in week.items:
+        row = {**asdict(i), "at": i.at.isoformat()}
+        if redact and i.private:
+            row.update(repo=PRIVATE_REPO, title=PRIVATE_TITLE, url="", body="", branch="", identities=[],
+                       trailers=[], author="", signals=[s.split(":", 1)[0] for s in i.signals])
+        items.append(row)
+    out_stats = {**asdict(stats), "top_repos": [[hide(r), n] for r, n in stats.top_repos]}
+    skipped = [s for s in week.skipped if not redact or s.split(":", 1)[0] not in private]
+    return {"window": [week.window.since.isoformat(), week.window.until.isoformat()], "scope": week.scope,
+            "repos": [hide(r) for r in week.repos], "stats": out_stats, "skipped": skipped, "items": items}
+
+
 def build_outputs(week: Week, stats: Stats, tz: tzinfo, *, llm: LLM | None = None,
                   redact: bool = False) -> dict[str, str]:
     facts = facts_text(week, stats, tz, redact=True)
+    allowed = allowed_numbers(stats)
     summary = _ask(llm, "Write 2 or 3 sentences telling an owner what shipped this week and how much of it "
-                        "agents wrote.", facts, 300, must_contain=f"{stats.agent_pct}%")
+                        "agents wrote.", facts, allowed, 300, must_contain=f"{stats.agent_pct}%")
     post = _ask(llm, "Write a shareable post of at most 900 characters. Line one states the agent-authored "
                      "share as a number. Then name two or three concrete things that shipped. Never name "
-                     "private repos.", facts, 500, must_contain=f"{stats.agent_pct}%")
-    data = {"window": [week.window.since.isoformat(), week.window.until.isoformat()], "scope": week.scope,
-            "repos": week.repos, "stats": asdict(stats), "skipped": week.skipped,
-            "items": [{**asdict(i), "at": i.at.isoformat()} for i in week.items]}
+                     "private repos.", facts, allowed, 500, must_contain=f"{stats.agent_pct}%")
+    data = export_json(week, stats, redact)
     return {
         "notes.md": notes_text(week, stats, tz, summary, redact),
         "brief.md": brief_text(week, stats, tz, summary, redact),

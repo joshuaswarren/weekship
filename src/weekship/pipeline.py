@@ -8,7 +8,7 @@ from dataclasses import dataclass
 
 from .classify import classify_origin
 from .config import Config
-from .github import Client, GitHubError
+from .github import Client
 from .impact import rate
 from .model import AGENT, BOT, HUMAN, Item, Week, Window
 
@@ -32,8 +32,8 @@ def collect_week(client: Client, window: Window, cfg: Config, *, owner: str | No
         progress(f"reading {name}")
         try:
             return name, client.collect(selected[name], window.since, window.until)
-        except GitHubError as err:
-            return name, str(err)
+        except Exception as err:  # one unreadable repo must not abort an org-wide run
+            return name, f"{type(err).__name__}: {err}"
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
         for name, result in pool.map(read, sorted(selected)):

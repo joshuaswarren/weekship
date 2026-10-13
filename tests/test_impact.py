@@ -20,7 +20,7 @@ def test_bigger_prs_score_higher_within_a_category():
 
 
 def test_security_feature_and_breaking_are_high_tier_chores_are_low():
-    assert rate(make_item(title="fix security hole", additions=300)).tier == "high"
+    assert rate(make_item(title="security: patch session fixation", additions=300)).tier == "high"
     assert rate(make_item(title="feat!: drop v1 api", additions=50)).tier == "high"
     assert rate(make_item(title="chore: bump version", additions=1, deletions=1)).tier == "low"
 

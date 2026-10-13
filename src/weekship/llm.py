@@ -35,12 +35,16 @@ class LLM:
     http: Post = _http
 
     @classmethod
-    def from_env(cls, base_url: str | None = None, model: str | None = None) -> "LLM":
+    def from_env(cls, base_url: str | None = None, model: str | None = None, *,
+                 file_base_url: str | None = None, file_model: str | None = None,
+                 key_env: str | None = None) -> "LLM":
+        """Resolve settings: command-line flag, then environment, then config file, then the default."""
         env = os.environ
         return cls(
-            base_url=(base_url or env.get("WEEKSHIP_LLM_BASE_URL") or env.get("OPENAI_BASE_URL") or DEFAULT_BASE_URL).rstrip("/"),
-            api_key=env.get("WEEKSHIP_LLM_API_KEY") or env.get("OPENAI_API_KEY") or "none",
-            model=model or env.get("WEEKSHIP_MODEL"),
+            base_url=(base_url or env.get("WEEKSHIP_LLM_BASE_URL") or env.get("OPENAI_BASE_URL")
+                      or file_base_url or DEFAULT_BASE_URL).rstrip("/"),
+            api_key=env.get("WEEKSHIP_LLM_API_KEY") or (key_env and env.get(key_env)) or env.get("OPENAI_API_KEY") or "none",
+            model=model or env.get("WEEKSHIP_MODEL") or file_model,
         )
 
     def _headers(self) -> dict:

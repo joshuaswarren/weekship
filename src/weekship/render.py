@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 from dataclasses import asdict
 from datetime import tzinfo
 
 from .impact import ORDER, TITLES
-from .llm import LLM, LLMError, numbers_ok
+from .llm import LLM, LLMError, numbers_in
 from .model import AGENT, BOT, HUMAN, Item, Week
 from .pipeline import Stats
 
@@ -56,9 +57,13 @@ def release_lines(releases: list[Item], redact: bool) -> list[str]:
     return lines
 
 
+def noun(n: int, word: str) -> str:
+    return word if n == 1 else word + "s"
+
+
 def counts_line(stats: Stats) -> str:
     o = stats.by_origin
-    return (f"{stats.changes:,} changes across {stats.repos_active:,} repos: {o[AGENT]:,} agent-authored "
+    return (f"{stats.changes:,} {noun(stats.changes, 'change')} across {stats.repos_active:,} {noun(stats.repos_active, 'repo')}: {o[AGENT]:,} agent-authored "
             f"({stats.agent_pct}%), {o[BOT]:,} bot, {o[HUMAN]:,} with no agent marker.")
 
 
@@ -135,7 +140,7 @@ def post_text(week: Week, stats: Stats, tz: tzinfo, text: str | None) -> str:
     work = [i for i in week.items if i.kind != "release"]
     public = [i for i in work if not i.private]
     top = [i for i in public if i.tier != "low"][:3] or public[:3]
-    lines = [f"We shipped {stats.changes:,} changes across {stats.repos_active:,} repos this week. "
+    lines = [f"We shipped {stats.changes:,} {noun(stats.changes, 'change')} across {stats.repos_active:,} {noun(stats.repos_active, 'repo')} this week. "
              f"{stats.by_origin[AGENT]:,} of them ({stats.agent_pct}%) are marked as written by AI agents.", ""]
     lines += [f"- {i.title}" for i in top]
     return "\n".join(lines).rstrip() + "\n"
@@ -147,13 +152,18 @@ _SYSTEM = ("You write plain, factual engineering updates in American English. Te
            "<facts>. No hype, no emojis, no hashtags, no em dashes.")
 
 
-def facts_text(week: Week, stats: Stats, tz: tzinfo, redact: bool) -> str:
+def mask_numbers(title: str) -> str:
+    """Titles go to the model with digits replaced by N, so it cannot repeat a figure we did not compute."""
+    return re.sub(r"\d+(?:[.,]\d+)*", "N", title)
+
+
+def facts_text(week: Week, stats: Stats, redact: bool) -> str:
     top = [i for i in week.items if i.kind != "release"][:8]
-    rows = [f"- {item_title(i, redact)} [{repo_label(i.repo, i.private, redact)}, {i.origin}, {i.category}]" for i in top]
+    rows = [f"- {mask_numbers(item_title(i, redact))} [{repo_label(i.repo, i.private, redact)}, {i.origin}, {i.category}]" for i in top]
     return "\n".join([
-        f"Period: {date_range(week, tz)}", counts_line(stats),
+        "Period: the reporting period. Do not write dates.", counts_line(stats),
         f"Agent share of PR lines: {stats.agent_line_pct}%", f"Releases: {stats.releases}",
-        "Biggest changes:", *rows])
+        "Biggest changes (N is a number removed on purpose; do not guess it):", *rows])
 
 
 def allowed_numbers(stats: Stats) -> str:
@@ -161,18 +171,25 @@ def allowed_numbers(stats: Stats) -> str:
     return " ".join([counts_line(stats), f"{stats.agent_line_pct}% {stats.releases} {stats.automated_pct}%"])
 
 
-def _ask(llm: LLM | None, user: str, facts: str, allowed: str, max_tokens: int, must_contain: str = "") -> str | None:
+def _ask(llm: LLM | None, user: str, facts: str, allowed: str, max_tokens: int,
+         must_contain: tuple[str, ...] = (), attempts: int = 2) -> str | None:
+    """Ask the model; keep its text only if it adds no number we did not compute and states the real figure."""
     if llm is None:
         return None
-    try:
-        text = llm.complete(_SYSTEM, f"{user}\n\n<facts>\n{facts}\n</facts>", max_tokens)
-    except LLMError as err:
-        print(f"weekship: language model unavailable, writing plain text ({err})", file=sys.stderr)
-        return None
-    if not numbers_ok(text, allowed) or must_contain not in text:
-        print("weekship: model output failed the number check, writing plain text", file=sys.stderr)
-        return None
-    return text
+    for attempt in range(attempts):
+        try:
+            text = llm.complete(_SYSTEM, f"{user}\n\n<facts>\n{facts}\n</facts>", max_tokens)
+        except LLMError as err:
+            print(f"weekship: language model unavailable, writing plain text ({err})", file=sys.stderr)
+            return None
+        text = re.sub(r"\s*(percent|per cent)\b", "%", text, flags=re.I)
+        extra = numbers_in(text) - numbers_in(allowed)
+        if not extra and any(token in text for token in must_contain):
+            return text
+        why = f"unexpected numbers {sorted(extra)}" if extra else f"none of {list(must_contain)} present"
+        print(f"weekship: model output rejected ({why}), attempt {attempt + 1} of {attempts}", file=sys.stderr)
+    print("weekship: writing plain text instead", file=sys.stderr)
+    return None
 
 
 def export_json(week: Week, stats: Stats, redact: bool) -> dict:
@@ -193,13 +210,17 @@ def export_json(week: Week, stats: Stats, redact: bool) -> dict:
 
 def build_outputs(week: Week, stats: Stats, tz: tzinfo, *, llm: LLM | None = None,
                   redact: bool = False) -> dict[str, str]:
-    facts = facts_text(week, stats, tz, redact=True)
+    facts = facts_text(week, stats, redact=True)
     allowed = allowed_numbers(stats)
+    real_figure = (f"{stats.agent_pct}%", f"{stats.by_origin[AGENT]:,} of {stats.changes:,}")
     summary = _ask(llm, "Write 2 or 3 sentences telling an owner what shipped this week and how much of it "
-                        "agents wrote.", facts, allowed, 300, must_contain=f"{stats.agent_pct}%")
-    post = _ask(llm, "Write a shareable post of at most 900 characters. Line one states the agent-authored "
-                     "share as a number. Then name two or three concrete things that shipped. Never name "
-                     "private repos.", facts, allowed, 500, must_contain=f"{stats.agent_pct}%")
+                        "agents wrote. Do not wrap lines.", facts, allowed, 300, must_contain=real_figure)
+    lead = (f"{stats.by_origin[AGENT]:,} of {stats.changes:,} {noun(stats.changes, 'change')} "
+            f"({stats.agent_pct}%) were authored by AI agents")
+    post = _ask(llm, f"Write a shareable post of at most 900 characters. Line one is exactly: {lead}. "
+                     "Then name two or three concrete things that shipped, as hyphen bullets, never numbered. "
+                     "Never name private repos. Do not wrap lines: each bullet is one line.", facts, allowed, 500,
+                must_contain=(f"{stats.agent_pct}%",))
     data = export_json(week, stats, redact)
     return {
         "notes.md": notes_text(week, stats, tz, summary, redact),

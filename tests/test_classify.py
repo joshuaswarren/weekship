@@ -48,3 +48,17 @@ def test_config_extends_defaults(tmp_path):
     assert classify_origin(make_item(branch="fleet/x"), cfg).origin == "agent"
     assert classify_origin(make_item(branch="claude/x"), cfg).origin == "agent"
     assert cfg.exclude_repos == ["o/private*"]
+
+
+def test_user_level_config_supplies_llm_settings_and_a_repo_file_wins(tmp_path, monkeypatch):
+    home = tmp_path / "cfg" / "weekship"
+    home.mkdir(parents=True)
+    (home / "config.toml").write_text('[llm]\nbase_url = "http://fleet/v1"\nmodel = "advisor"\napi_key_env = "FLEET_KEY"\n')
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    work = tmp_path / "work"
+    work.mkdir()
+    monkeypatch.chdir(work)
+    cfg = load_config()
+    assert (cfg.llm_base_url, cfg.llm_model, cfg.llm_api_key_env) == ("http://fleet/v1", "advisor", "FLEET_KEY")
+    (work / ".weekship.toml").write_text('[llm]\nbase_url = "http://repo/v1"\n')
+    assert load_config().llm_base_url == "http://repo/v1"

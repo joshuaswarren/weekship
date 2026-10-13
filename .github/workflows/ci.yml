@@ -19,3 +19,21 @@ jobs:
           python-version: ${{ matrix.python }}
       - run: python -m pip install ".[dev]"
       - run: python -m pytest -q
+  action:
+    name: Action runs on this repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - id: weekship
+        uses: ./
+        with:
+          since: 30d
+      - name: Check outputs
+        env:
+          CHANGES: ${{ steps.weekship.outputs.changes }}
+          PCT: ${{ steps.weekship.outputs.agent-pct }}
+        run: |
+          test -s weekship-out/notes.md && test -s weekship-out/brief.md && test -s weekship-out/post.md
+          python -c "import json; json.load(open('weekship-out/week.json'))"
+          echo "changes=$CHANGES agent-pct=$PCT"
+          test -n "$CHANGES" && test -n "$PCT"

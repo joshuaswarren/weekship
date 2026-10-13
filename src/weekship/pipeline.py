@@ -8,7 +8,7 @@ from dataclasses import dataclass
 
 from .classify import classify_origin
 from .config import Config
-from .github import Client
+from .github import Client, parse_time
 from .impact import rate
 from .model import AGENT, BOT, HUMAN, Item, Week, Window
 
@@ -95,3 +95,15 @@ def summarize(week: Week) -> Stats:
         top_author_pct=_pct(top_count, len(work)),
     )
 
+
+
+def week_from_json(data: dict) -> Week:
+    """Rebuild a Week from a saved week.json so it can be re-rendered without calling GitHub again."""
+    tuples = ("labels", "trailers", "identities", "signals")
+    items = []
+    for row in data["items"]:
+        row = {**row, "at": parse_time(row["at"]), **{k: tuple(row[k]) for k in tuples}}
+        items.append(Item(**row))
+    since, until = (parse_time(t) for t in data["window"])
+    return Week(window=Window(since, until), scope=data["scope"], repos=list(data["repos"]), items=items,
+                skipped=list(data["skipped"]))
